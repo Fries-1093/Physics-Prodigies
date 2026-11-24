@@ -19,6 +19,10 @@ LETTERS = set("ABCDE")
 
 @app.route("/")
 def home():
+    return send_from_directory(app.root_path, "Scantron.html")
+
+@app.route("/start")
+def start():
     return send_from_directory(app.root_path, "start.html")
 
 @app.route("/scantron")
