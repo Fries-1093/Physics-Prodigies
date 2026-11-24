@@ -17,6 +17,10 @@ app = Flask(__name__)
 LETTERS = set("ABCDE")
 
 
+@app.route("/")
+def home():
+    return send_from_directory(app.root_path, "start.html")
+
 @app.route("/scantron")
 def scantron():
     return send_from_directory(app.root_path, "Scantron.html")
