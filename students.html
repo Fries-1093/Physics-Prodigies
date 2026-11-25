@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Scantroon - Students</title>
+
+        <style>
+
+            body{
+                text-align: center;
+                font-size: 110%;
+            }
+
+            h1{
+                margin-top: 200px;
+            }
+
+            button{
+                text-align: center;
+                background-color: rgb(19, 58, 176);
+                color: whitesmoke;
+                padding: 10px;
+                margin-bottom: 10px;
+                width: 200px;
+            }
+
+            video, #preview{
+                width: 100%;
+                max-width: 400px;
+                border-radius: 8px;
+            }
+
+            #status{
+                white-space: pre-wrap;
+            }
+
+            .error{
+                color: #b00020;
+            }
+
+        </style>
+
+    </head>
+
+    <body>
+
+        <h1>Please Scan the Student</h1>
+
+        <p id="studentCount">Students Scanned: 0/33</p>
+
+        <br>
+
+        <div id="nameSection">
+
+            <label for="studentName">
+                Student Name (Optional):
+            </label>
+
+            <br>
+            <br>
+
+            <input id="studentName" type="text">
+
+        </div>
+
+        <br>
+        <br>
+
+        <button id="startBtn">Scan Student</button>
+
+        <br>
+
+        <!-- Live camera view -->
+
+        <video id="video" autoplay playsinline muted
+               style="display:none;"></video>
+
+        <br>
+
+        <button id="captureBtn" style="display:none;">
+            Take Photo
+        </button>
+
+        <!-- Photo preview -->
+
+        <img id="preview" alt="Captured photo"
+             style="display:none;">
+
+        <br>
+
+        <button id="useBtn" style="display:none;">
+            Use This Photo
+        </button>
+
+        <button id="retakeBtn" style="display:none;">
+            Retake
+        </button>
+
+        <!-- Fallback photo upload -->
+
+        <div id="fileSection">
+
+            <p>Camera not working? Take or choose a photo instead:</p>
+
+            <input id="fileInput" type="file"
+                   accept="image/*" capture="environment">
+
+        </div>
+
+        <p id="status"></p>
+
+        <!-- Appears once a student's photo is saved -->
+
+        <button id="nextBtn" style="display:none;">
+            Next
+        </button>
+
+        <br>
+
+        <button id="continueBtn" style="display:none;">
+            Continue
+        </button>
+
+        <br>
+        <br>
+        <br>
+
+        <button id="backBtn">Back</button>
+
+        <script>
+
+            const video = document.getElementById("video");
+            const preview = document.getElementById("preview");
+            const statusBox = document.getElementById("status");
+            const fileInput = document.getElementById("fileInput");
+            const studentName = document.getElementById("studentName");
+            const studentCount = document.getElementById("studentCount");
+
+            let stream = null;
+            let photoBlob = null;
+            let previewURL = null;
+
+            let submitting = false;
+            let saved = false;
+
+            let count = 0;
+            let maximum = 33;
+
+
+            function show(id, visible) {
+
+                document.getElementById(id).style.display =
+                    visible ? "inline-block" : "none";
+
+            }
+
+
+            function setStatus(message, isError) {
+
+                statusBox.textContent = message;
+                statusBox.className = isError ? "error" : "";
+
+            }
+
+
+            function updateCount() {
+
+                studentCount.textContent =
+                    "Students Scanned: " + count + "/" + maximum;
+
+            }
+
+
+            function stopCamera() {
+
+                if (stream) {
+
+                    stream.getTracks().forEach(function (t) {
+                        t.stop();
+                    });
+
+                    stream = null;
+
+                }
+
+                video.srcObject = null;
+                video.style.display = "none";
+
+                show("captureBtn", false);
+
+            }
+
+
+            function clearPreview() {
+
+                if (previewURL) {
+
+                    URL.revokeObjectURL(previewURL);
+                    previewURL = null;
+
+                }
+
+                photoBlob = null;
+
+                preview.removeAttribute("src");
+                preview.style.display = "none";
+
+            }
+
+
+            function classFull() {
+
+                stopCamera();
+
+                show("startBtn", false);
+                show("captureBtn", false);
+                show("useBtn", false);
+                show("retakeBtn", false);
+                show("nextBtn", false);
+                show("fileSection", false);
+                show("nameSection", false);
+                show("continueBtn", true);
+
+                fileInput.disabled = true;
+                studentName.disabled = true;
+
+                setStatus(
+                    "Maximum of " + maximum +
+                    " students reached. Press Continue to view the results.",
+                    false
+                );
+
+            }
+
+
+            // Retrieve the existing student count
+
+            async function loadCount() {
+
+                try {
+
+                    const res = await fetch("/student-count");
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                        throw new Error("Unable to retrieve student count.");
+                    }
+
+                    count = data.count;
+                    maximum = data.maximum;
+
+                    updateCount();
+
+                    if (count > 0) {
+                        show("continueBtn", true);
+                    }
+
+                    if (count >= maximum) {
+                        classFull();
+                    }
+
+                } catch (err) {
+
+                    setStatus(
+                        "Could not retrieve the student count.",
+                        true
+                    );
+
+                }
+
+            }
+
+            loadCount();
+
+
+            function showPreview(blob) {
+
+                if (!blob || submitting || saved || count >= maximum) {
+                    return;
+                }
+
+                clearPreview();
+
+                photoBlob = blob;
+
+                previewURL = URL.createObjectURL(blob);
+                preview.src = previewURL;
+
+                preview.style.display = "inline-block";
+
+                show("useBtn", true);
+                show("retakeBtn", true);
+                show("startBtn", false);
+                show("continueBtn", false);
+
+                setStatus("", false);
+
+            }
+
+
+            // 1. Open the camera
+
+            document.getElementById("startBtn").onclick =
+                async function () {
+
+                    if (submitting || saved || count >= maximum || stream) {
+                        return;
+                    }
+
+                    try {
+
+                        stream = await navigator.mediaDevices.getUserMedia({
+
+                            video: {
+                                facingMode: {
+                                    ideal: "environment"
+                                }
+                            },
+
+                            audio: false
+
+                        });
+
+                        video.srcObject = stream;
+                        video.style.display = "inline-block";
+
+                        show("captureBtn", true);
+                        show("startBtn", false);
+
+                        setStatus("", false);
+
+                    } catch (err) {
+
+                        setStatus(
+                            "Could not open the camera (" +
+                            err.name +
+                            "). Use the photo option below instead.",
+                            true
+                        );
+
+                    }
+
+                };
+
+
+            // 2. Take the student photo
+
+            document.getElementById("captureBtn").onclick =
+                function () {
+
+                    if (!video.videoWidth || !video.videoHeight) {
+
+                        setStatus("Camera is not ready.", true);
+                        return;
+
+                    }
+
+                    const canvas = document.createElement("canvas");
+
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+
+                    canvas.getContext("2d").drawImage(video, 0, 0);
+
+                    canvas.toBlob(function (blob) {
+
+                        stopCamera();
+                        showPreview(blob);
+
+                    }, "image/jpeg", 0.92);
+
+                };
+
+
+            // Fallback: choose a photo
+
+            fileInput.onchange = function (e) {
+
+                if (
+                    e.target.files[0] &&
+                    !submitting &&
+                    !saved &&
+                    count < maximum
+                ) {
+
+                    stopCamera();
+                    showPreview(e.target.files[0]);
+
+                }
+
+            };
+
+
+            // Retake the student photo
+
+            document.getElementById("retakeBtn").onclick =
+                function () {
+
+                    if (submitting || saved) {
+                        return;
+                    }
+
+                    clearPreview();
+
+                    fileInput.value = "";
+
+                    show("useBtn", false);
+                    show("retakeBtn", false);
+                    show("startBtn", true);
+                    show("continueBtn", count > 0);
+
+                    setStatus("", false);
+
+                };
+
+
+            // 3. Send the photo as a student paper
+
+            document.getElementById("useBtn").onclick =
+                async function () {
+
+                    if (
+                        !photoBlob ||
+                        submitting ||
+                        saved ||
+                        count >= maximum
+                    ) {
+                        return;
+                    }
+
+                    submitting = true;
+
+                    document.getElementById("useBtn").disabled = true;
+                    document.getElementById("retakeBtn").disabled = true;
+
+                    fileInput.disabled = true;
+                    studentName.disabled = true;
+
+                    const form = new FormData();
+
+                    form.append("photo", photoBlob, "student.jpg");
+                    form.append("mode", "student");
+                    form.append("name", studentName.value.trim());
+
+                    setStatus("Reading the student answers...", false);
+
+                    try {
+
+                        const res = await fetch("/scan", {
+
+                            method: "POST",
+                            body: form
+
+                        });
+
+                        const data = await res.json();
+
+                        if (!res.ok) {
+
+                            setStatus(
+                                data.error ||
+                                "Something went wrong. Please retake the photo.",
+                                true
+                            );
+
+                            return;
+
+                        }
+
+                        saved = true;
+
+                        count = data.student_count;
+                        maximum = data.maximum;
+
+                        updateCount();
+
+                        let message =
+                            data.name + " saved successfully!" +
+                            "\nAnswers: " + data.answers.join(", ") +
+                            "\nScore: " + data.score + "/" + data.total;
+
+                        if (data.needs_review.length > 0) {
+
+                            message +=
+                                "\nAnswers to check: Q" +
+                                data.needs_review.join(", Q");
+
+                        }
+
+                        if (count >= maximum) {
+
+                            message +=
+                                "\nMaximum of " + maximum +
+                                " students reached.";
+
+                        }
+
+                        setStatus(message, false);
+
+                        show("useBtn", false);
+                        show("retakeBtn", false);
+                        show("startBtn", false);
+                        show("fileSection", false);
+
+                        show("nextBtn", count < maximum);
+                        show("continueBtn", true);
+
+                    } catch (err) {
+
+                        setStatus(
+                            "Could not reach the server: " +
+                            err.message,
+                            true
+                        );
+
+                    } finally {
+
+                        submitting = false;
+
+                        document.getElementById("useBtn").disabled = false;
+                        document.getElementById("retakeBtn").disabled = false;
+
+                        if (!saved && count < maximum) {
+
+                            fileInput.disabled = false;
+                            studentName.disabled = false;
+
+                        }
+
+                    }
+
+                };
+
+
+            // 4. NEXT: Scan another student
+
+            document.getElementById("nextBtn").onclick =
+                function () {
+
+                    if (!saved || submitting) {
+                        return;
+                    }
+
+                    if (count >= maximum) {
+
+                        classFull();
+                        return;
+
+                    }
+
+                    stopCamera();
+                    clearPreview();
+
+                    saved = false;
+
+                    studentName.value = "";
+                    studentName.disabled = false;
+
+                    fileInput.value = "";
+                    fileInput.disabled = false;
+
+                    show("nextBtn", false);
+                    show("continueBtn", true);
+                    show("useBtn", false);
+                    show("retakeBtn", false);
+
+                    show("startBtn", true);
+                    show("nameSection", true);
+                    show("fileSection", true);
+
+                    setStatus("", false);
+
+                };
+
+
+            // 5. CONTINUE: Finish scanning students
+
+            document.getElementById("continueBtn").onclick =
+                function () {
+
+                    if (submitting) {
+                        return;
+                    }
+
+                    if (photoBlob && !saved) {
+
+                        setStatus(
+                            "Please use or retake the current photo first.",
+                            true
+                        );
+
+                        return;
+
+                    }
+
+                    stopCamera();
+                    clearPreview();
+
+                    window.location.href = "/results";
+
+                };
+
+
+            // Back button
+
+            document.getElementById("backBtn").onclick =
+                function () {
+
+                    if (submitting) {
+                        return;
+                    }
+
+                    stopCamera();
+                    clearPreview();
+
+                    window.location.href = "/";
+
+                };
+
+
+            // Turn off the camera when leaving the page
+
+            window.addEventListener("pagehide", function () {
+
+                stopCamera();
+                clearPreview();
+
+            });
+
+        </script>
+
+    </body>
+</html>
