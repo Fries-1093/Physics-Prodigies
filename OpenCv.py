@@ -4,6 +4,7 @@
 Supports:
 - Heavily shaded bubbles
 - Lightly shaded bubbles
+- Uneven lighting and shadows
 - Blank answers
 - Multiple answers
 - Uncertain answers requiring review
@@ -26,8 +27,7 @@ WORK_WIDTH = 495
 
 
 def find_grid(gray):
-    """Return ten rows (Q1-Q5 left, Q6-Q10 right),
-    each containing five circles."""
+    """Return ten rows, each containing five circles."""
 
     blur = cv2.GaussianBlur(gray, (5, 5), 1)
 
@@ -134,22 +134,27 @@ def find_grid(gray):
 
 def measure(gray, circle):
     """
-    Measure the shading inside a bubble while reducing
-    interference from the printed letter and outer ring.
+    Measure bubble shading relative to the surrounding paper.
+
+    Local brightness normalization reduces the effect
+    of uneven lighting, shadows and bright areas.
     """
 
-    x, y, _ = (
+    x, y, r = (
         int(round(value)) for value in circle
     )
 
-    radius = 7
+    radius = max(12, int(r * 1.6))
 
     patch = gray[
         y-radius:y+radius+1,
         x-radius:x+radius+1
     ]
 
-    if patch.shape != (15, 15):
+    if patch.shape != (
+        2 * radius + 1,
+        2 * radius + 1
+    ):
         raise ValueError(
             "Bubble too close to photo edge."
         )
@@ -159,75 +164,105 @@ def measure(gray, circle):
         -radius:radius+1
     ]
 
-    # Only measure the interior of the bubble
+    distance = xx * xx + yy * yy
 
-    pixels = patch[xx * xx + yy * yy < 40]
+    # Measure the interior of the bubble,
+    # excluding the outer printed circle.
 
-    # Upper-percentile brightness reduces interference
-    # from the dark printed letters inside blank bubbles.
+    inside = distance <= (r * 0.65) ** 2
+
+    pixels = patch[inside]
+
+    # Measure the paper surrounding the bubble.
+    # Use areas above and below to avoid nearby options.
+
+    outside = (
+        (distance >= (r * 1.15) ** 2)
+        & (distance <= (r * 1.5) ** 2)
+        & (np.abs(yy) >= r)
+    )
+
+    background = patch[outside]
+
+    if len(background) == 0:
+        raise ValueError(
+            "Unable to measure background."
+        )
+
+    # Determine the local paper brightness.
+
+    paper_brightness = float(
+        np.median(background)
+    )
+
+    # The 85th percentile reduces interference
+    # from printed letters inside the bubbles.
+
+    bubble_brightness = float(
+        np.percentile(pixels, 85)
+    )
+
+    # Higher darkness means more pencil shading.
+
+    darkness = paper_brightness - bubble_brightness
 
     return (
         float(np.std(pixels)),
-        float(np.percentile(pixels, 85))
+        darkness
     )
 
 
 def classify_question(stats):
     """
-    Detect shaded bubbles using upper-percentile brightness.
-
-    Supports heavy shading, light shading, multiple answers,
-    blank answers and uncertain answers.
+    Detect heavy shading, light shading,
+    multiple answers, blank answers and uncertain answers.
     """
 
     stds = [s for s, _ in stats]
 
-    brightness = [b for _, b in stats]
-
-    baseline = float(np.median(brightness))
-
-    darkness = [
-        baseline - b for b in brightness
-    ]
+    darkness = [d for _, d in stats]
 
     marked = []
     possible = []
 
-    # STEP 1: Identify shaded bubbles
+    # STEP 1: Identify shaded bubbles.
 
     for i in range(OPTIONS):
 
-        # Clearly shaded bubble
+        # Clearly shaded bubble.
 
-        if darkness[i] >= 25.0:
-
-            marked.append(i)
-
-        # Lightly shaded bubble
-
-        elif (
-            darkness[i] >= 14.0
-            and stds[i] < 30.0
+        if (
+            darkness[i] >= 30.0
+            and stds[i] < 35.0
         ):
 
             marked.append(i)
 
-        # Possible faint shading
+        # Lightly shaded bubble.
 
         elif (
-            darkness[i] >= 8.0
-            and stds[i] < 30.0
+            darkness[i] >= 18.0
+            and stds[i] < 28.0
+        ):
+
+            marked.append(i)
+
+        # Very faint shading requiring review.
+
+        elif (
+            darkness[i] >= 10.0
+            and stds[i] < 25.0
         ):
 
             possible.append(i)
 
-    # STEP 2: Multiple shaded answers
+    # STEP 2: Multiple confidently shaded bubbles.
 
     if len(marked) >= 2:
 
         return "MULTIPLE", marked, possible
 
-    # STEP 3: One confidently shaded answer
+    # STEP 3: One confidently shaded bubble.
 
     if len(marked) == 1:
 
@@ -237,33 +272,13 @@ def classify_question(stats):
 
         return LETTERS[marked[0]], marked, []
 
-    # STEP 4: Check for distinct light shading
-
-    darkest = int(np.argmin(brightness))
-
-    others = [
-        brightness[j]
-        for j in range(OPTIONS)
-        if j != darkest
-    ]
-
-    margin = min(others) - brightness[darkest]
-
-    if (
-        darkness[darkest] >= 12.0
-        and margin >= 8.0
-        and stds[darkest] < 35.0
-    ):
-
-        return LETTERS[darkest], [darkest], []
-
-    # STEP 5: Flag uncertain shading
+    # STEP 4: Uncertain shading.
 
     if possible:
 
         return "REVIEW", [], possible
 
-    # STEP 6: No sufficient evidence of shading
+    # STEP 5: No convincing evidence of shading.
 
     return "BLANK", [], []
 
@@ -299,8 +314,12 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
 
     answers = []
 
-    print("Question | Answer   | Std deviations      | Brightness P85")
-    print("-" * 85)
+    print(
+        "Question | Answer   | Std deviations"
+        "            | Normalized Darkness"
+    )
+
+    print("-" * 90)
 
     for q, row in enumerate(rows, start=1):
 
@@ -315,9 +334,9 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
 
         for i, (x, y, _) in enumerate(row):
 
-            # Green = confidently shaded
-            # Orange = possible shading
-            # Blue = unmarked
+            # Green = confidently shaded.
+            # Orange = possible shading.
+            # Blue = unmarked.
 
             color = (
                 (0, 190, 0) if i in marked else
@@ -352,13 +371,13 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
             round(s, 1) for s, _ in stats
         ]
 
-        brightness = [
-            round(b, 1) for _, b in stats
+        darkness = [
+            round(d, 1) for _, d in stats
         ]
 
         print(
             f"Q{q:02d}      | {answer:<8} | "
-            f"{str(stds):<25} | {brightness}"
+            f"{str(stds):<25} | {darkness}"
         )
 
     if not cv2.imwrite(str(debug_path), annotated):
@@ -572,7 +591,7 @@ def main():
 
             student_id = str(args.student_id)
 
-            # Prevent spreadsheet formula interpretation
+            # Prevent spreadsheet formula interpretation.
 
             if student_id.startswith(
                 ("=", "+", "-", "@", "\t", "\r")
