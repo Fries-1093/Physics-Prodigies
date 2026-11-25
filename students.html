@@ -52,13 +52,13 @@
         <div id="nameSection">
 
             <label for="studentName">
-                Student Name (Optional):
+                Student Number:
             </label>
 
             <br>
             <br>
 
-            <input id="studentName" type="text">
+            <input id="studentName" type="text" inputmode="numeric" required>
 
         </div>
 
@@ -425,6 +425,13 @@
                         count >= maximum
                     ) {
                         return;
+                    }
+
+                    if (!/^\d+$/.test(studentName.value.trim())) {
+                        
+                        setStatus("Please enter a valid student number.", true);
+                        return;
+                    
                     }
 
                     submitting = true;
