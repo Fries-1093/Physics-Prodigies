@@ -1,8 +1,12 @@
 """
 10-question, two-column Scantron reader.
 
-Supports dark shading, light shading, blank answers,
-multiple answers and uncertain answers requiring review.
+Supports:
+- Heavily shaded bubbles
+- Lightly shaded bubbles
+- Blank answers
+- Multiple answers
+- Uncertain answers requiring review
 
 Install: python -m pip install opencv-python numpy
 """
@@ -23,7 +27,7 @@ WORK_WIDTH = 495
 
 def find_grid(gray):
     """Return ten rows (Q1-Q5 left, Q6-Q10 right),
-    each with five circles."""
+    each containing five circles."""
 
     blur = cv2.GaussianBlur(gray, (5, 5), 1)
 
@@ -129,8 +133,10 @@ def find_grid(gray):
 
 
 def measure(gray, circle):
-    """Measure central shading while excluding
-    the outer printed bubble ring."""
+    """
+    Measure the shading inside a bubble while reducing
+    interference from the printed letter and outer ring.
+    """
 
     x, y, _ = (
         int(round(value)) for value in circle
@@ -153,147 +159,109 @@ def measure(gray, circle):
         -radius:radius+1
     ]
 
+    # Only measure the interior of the bubble
+
     pixels = patch[xx * xx + yy * yy < 40]
+
+    # Upper-percentile brightness reduces interference
+    # from the dark printed letters inside blank bubbles.
 
     return (
         float(np.std(pixels)),
-        float(np.median(pixels))
+        float(np.percentile(pixels, 85))
     )
 
 
 def classify_question(stats):
     """
-    Detect dark shading, light shading, multiple answers,
+    Detect shaded bubbles using upper-percentile brightness.
+
+    Supports heavy shading, light shading, multiple answers,
     blank answers and uncertain answers.
     """
 
     stds = [s for s, _ in stats]
-    medians = [m for _, m in stats]
 
-    strong = []
-    light = []
+    brightness = [b for _, b in stats]
+
+    baseline = float(np.median(brightness))
+
+    darkness = [
+        baseline - b for b in brightness
+    ]
+
+    marked = []
     possible = []
 
-    # STEP 1: Detect strongly and lightly shaded bubbles
+    # STEP 1: Identify shaded bubbles
 
     for i in range(OPTIONS):
 
-        others = [
-            medians[j]
-            for j in range(OPTIONS)
-            if j != i
-        ]
+        # Clearly shaded bubble
 
-        other_stds = [
-            stds[j]
-            for j in range(OPTIONS)
-            if j != i
-        ]
+        if darkness[i] >= 25.0:
 
-        darkness = float(
-            np.median(others) - medians[i]
-        )
+            marked.append(i)
 
-        std_advantage = float(
-            np.median(other_stds) - stds[i]
-        )
-
-        # Clearly shaded bubbles
-
-        if (
-            stds[i] < 32.0
-            and darkness >= 12.0
-        ):
-            strong.append(i)
-
-        # Lightly shaded bubbles
+        # Lightly shaded bubble
 
         elif (
-            stds[i] < 38.0
-            and darkness >= 7.0
-            and std_advantage >= 5.0
+            darkness[i] >= 14.0
+            and stds[i] < 30.0
         ):
-            light.append(i)
 
-    marked = sorted(set(strong + light))
+            marked.append(i)
 
-    # STEP 2: Multiple confidently shaded bubbles
+        # Possible faint shading
+
+        elif (
+            darkness[i] >= 8.0
+            and stds[i] < 30.0
+        ):
+
+            possible.append(i)
+
+    # STEP 2: Multiple shaded answers
 
     if len(marked) >= 2:
 
-        return "MULTIPLE", marked, []
+        return "MULTIPLE", marked, possible
 
-    # STEP 3: One confidently shaded bubble
+    # STEP 3: One confidently shaded answer
 
     if len(marked) == 1:
-
-        selected = marked[0]
-
-        remaining = [
-            j for j in range(OPTIONS)
-            if j != selected
-        ]
-
-        # Check for another potentially shaded bubble
-
-        for i in remaining:
-
-            others = [
-                medians[j]
-                for j in remaining
-                if j != i
-            ]
-
-            darkness = float(
-                np.median(others) - medians[i]
-            )
-
-            if (
-                stds[i] < 32.0
-                and darkness >= 12.0
-            ):
-                possible.append(i)
 
         if possible:
 
             return "REVIEW", marked, possible
 
-        return LETTERS[selected], marked, []
+        return LETTERS[marked[0]], marked, []
 
-    # STEP 4: Check for weaker shading
+    # STEP 4: Check for distinct light shading
 
-    darkest = int(np.argmin(medians))
+    darkest = int(np.argmin(brightness))
 
     others = [
-        medians[j]
+        brightness[j]
         for j in range(OPTIONS)
         if j != darkest
     ]
 
-    darkness = float(
-        np.median(others) - medians[darkest]
-    )
-
-    margin = min(others) - medians[darkest]
-
-    # Recognize lighter but distinct shading
+    margin = min(others) - brightness[darkest]
 
     if (
-        darkness >= 8.0
-        and margin >= 5.0
-        and stds[darkest] < 40.0
+        darkness[darkest] >= 12.0
+        and margin >= 8.0
+        and stds[darkest] < 35.0
     ):
 
         return LETTERS[darkest], [darkest], []
 
     # STEP 5: Flag uncertain shading
 
-    if (
-        darkness >= 5.0
-        and stds[darkest] < 42.0
-    ):
+    if possible:
 
-        return "REVIEW", [], [darkest]
+        return "REVIEW", [], possible
 
     # STEP 6: No sufficient evidence of shading
 
@@ -305,6 +273,7 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
     img = cv2.imread(str(path))
 
     if img is None:
+
         raise ValueError(
             f"Could not open image: {path}"
         )
@@ -330,8 +299,8 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
 
     answers = []
 
-    print("Question | Answer   | Std deviations      | Medians")
-    print("-" * 76)
+    print("Question | Answer   | Std deviations      | Brightness P85")
+    print("-" * 85)
 
     for q, row in enumerate(rows, start=1):
 
@@ -346,9 +315,9 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
 
         for i, (x, y, _) in enumerate(row):
 
-            # Green = confidently detected mark
-            # Orange = possible mark requiring review
-            # Blue = unmarked bubble
+            # Green = confidently shaded
+            # Orange = possible shading
+            # Blue = unmarked
 
             color = (
                 (0, 190, 0) if i in marked else
@@ -380,16 +349,16 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
         )
 
         stds = [
-            round(s) for s, _ in stats
+            round(s, 1) for s, _ in stats
         ]
 
-        medians = [
-            round(m) for _, m in stats
+        brightness = [
+            round(b, 1) for _, b in stats
         ]
 
         print(
             f"Q{q:02d}      | {answer:<8} | "
-            f"{str(stds):<19} | {medians}"
+            f"{str(stds):<25} | {brightness}"
         )
 
     if not cv2.imwrite(str(debug_path), annotated):
