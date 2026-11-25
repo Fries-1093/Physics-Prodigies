@@ -21,25 +21,6 @@ OPTIONS = 5
 WORK_WIDTH = 495
 
 
-# Strongly shaded bubbles
-MAX_SHADED_STD = 27.0
-MIN_DARKER_THAN_OTHERS = 12.0
-
-# Lightly shaded bubbles
-LIGHT_SHADED_STD = 34.0
-LIGHT_DARKNESS = 7.0
-LIGHT_MIN_MARGIN = 5.0
-LIGHT_STD_ADVANTAGE = 4.0
-
-# Uncertain shading
-REVIEW_STD = 42.0
-REVIEW_DARKNESS = 5.0
-
-# Possible additional shaded bubbles
-SECOND_MARK_STD = 38.0
-SECOND_MARK_DARKNESS = 9.0
-
-
 def find_grid(gray):
     """Return ten rows (Q1-Q5 left, Q6-Q10 right),
     each with five circles."""
@@ -112,6 +93,7 @@ def find_grid(gray):
             rows.append(row)
 
     # Check spacing between question rows
+
     for offset in (0, 5):
 
         centers = [
@@ -127,6 +109,7 @@ def find_grid(gray):
             )
 
     # Check alignment between both columns
+
     for i in range(5):
 
         left_y = np.median(
@@ -180,45 +163,20 @@ def measure(gray, circle):
 
 def classify_question(stats):
     """
-    Classify dark shading, light shading,
-    multiple answers, blank answers and uncertain answers.
+    Detect dark shading, light shading, multiple answers,
+    blank answers and uncertain answers.
     """
 
     stds = [s for s, _ in stats]
     medians = [m for _, m in stats]
 
-    baseline = float(np.median(medians))
-
     strong = []
     light = []
     possible = []
 
-    # STEP 1: Detect strongly shaded bubbles
+    # STEP 1: Detect strongly and lightly shaded bubbles
 
     for i in range(OPTIONS):
-
-        others = [
-            medians[j]
-            for j in range(OPTIONS)
-            if j != i
-        ]
-
-        darkness = float(
-            np.median(others) - medians[i]
-        )
-
-        if (
-            stds[i] < MAX_SHADED_STD
-            and darkness >= MIN_DARKER_THAN_OTHERS
-        ):
-            strong.append(i)
-
-    # STEP 2: Detect lightly shaded bubbles
-
-    for i in range(OPTIONS):
-
-        if i in strong:
-            continue
 
         others = [
             medians[j]
@@ -236,86 +194,110 @@ def classify_question(stats):
             np.median(others) - medians[i]
         )
 
-        margin = min(others) - medians[i]
-
         std_advantage = float(
             np.median(other_stds) - stds[i]
         )
 
+        # Clearly shaded bubbles
+
         if (
-            stds[i] < LIGHT_SHADED_STD
-            and darkness >= LIGHT_DARKNESS
-            and margin >= LIGHT_MIN_MARGIN
-            and std_advantage >= LIGHT_STD_ADVANTAGE
+            stds[i] < 32.0
+            and darkness >= 12.0
+        ):
+            strong.append(i)
+
+        # Lightly shaded bubbles
+
+        elif (
+            stds[i] < 38.0
+            and darkness >= 7.0
+            and std_advantage >= 5.0
         ):
             light.append(i)
 
-    # STEP 3: Combine confident detections
-
     marked = sorted(set(strong + light))
 
-    # STEP 4: Detect possible additional marks
-
-    for i in range(OPTIONS):
-
-        if i in marked:
-            continue
-
-        darkness = baseline - medians[i]
-
-        if (
-            stds[i] < SECOND_MARK_STD
-            and darkness >= SECOND_MARK_DARKNESS
-        ):
-            possible.append(i)
-
-    # STEP 5: Determine the final answer
+    # STEP 2: Multiple confidently shaded bubbles
 
     if len(marked) >= 2:
 
-        answer = "MULTIPLE"
+        return "MULTIPLE", marked, []
 
-    elif len(marked) == 1:
+    # STEP 3: One confidently shaded bubble
 
-        if possible:
-            answer = "REVIEW"
-        else:
-            answer = LETTERS[marked[0]]
+    if len(marked) == 1:
 
-    elif possible:
+        selected = marked[0]
 
-        answer = "REVIEW"
-
-    else:
-
-        darkest = int(np.argmin(medians))
-
-        others = [
-            medians[j]
-            for j in range(OPTIONS)
-            if j != darkest
+        remaining = [
+            j for j in range(OPTIONS)
+            if j != selected
         ]
 
-        delta = float(
-            np.median(others) - medians[darkest]
-        )
+        # Check for another potentially shaded bubble
 
-        # Very faint shading is flagged for review
-        # instead of immediately being marked blank.
+        for i in remaining:
 
-        if (
-            delta >= REVIEW_DARKNESS
-            and stds[darkest] < REVIEW_STD
-        ):
+            others = [
+                medians[j]
+                for j in remaining
+                if j != i
+            ]
 
-            answer = "REVIEW"
-            possible.append(darkest)
+            darkness = float(
+                np.median(others) - medians[i]
+            )
 
-        else:
+            if (
+                stds[i] < 32.0
+                and darkness >= 12.0
+            ):
+                possible.append(i)
 
-            answer = "BLANK"
+        if possible:
 
-    return answer, marked, possible
+            return "REVIEW", marked, possible
+
+        return LETTERS[selected], marked, []
+
+    # STEP 4: Check for weaker shading
+
+    darkest = int(np.argmin(medians))
+
+    others = [
+        medians[j]
+        for j in range(OPTIONS)
+        if j != darkest
+    ]
+
+    darkness = float(
+        np.median(others) - medians[darkest]
+    )
+
+    margin = min(others) - medians[darkest]
+
+    # Recognize lighter but distinct shading
+
+    if (
+        darkness >= 8.0
+        and margin >= 5.0
+        and stds[darkest] < 40.0
+    ):
+
+        return LETTERS[darkest], [darkest], []
+
+    # STEP 5: Flag uncertain shading
+
+    if (
+        darkness >= 5.0
+        and stds[darkest] < 42.0
+    ):
+
+        return "REVIEW", [], [darkest]
+
+    # STEP 6: No sufficient evidence of shading
+
+    return "BLANK", [], []
 
 
 def detect_answers(path, debug_path="debug_output_photo.png"):
@@ -613,7 +595,7 @@ def main():
             if file.tell() == 0:
 
                 writer.writerow([
-                    "Student ID",
+                    "Student Number",
                     *[f"Q{i}" for i in range(1, 11)],
                     "Correct",
                     "Percent"
@@ -622,6 +604,7 @@ def main():
             student_id = str(args.student_id)
 
             # Prevent spreadsheet formula interpretation
+
             if student_id.startswith(
                 ("=", "+", "-", "@", "\t", "\r")
             ):
