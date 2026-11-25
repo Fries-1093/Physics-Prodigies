@@ -112,9 +112,13 @@ def scan():
 
         return jsonify(answers=answers)
 
-    # Automatically assign a student name if none is entered
-    if not name:
-        name = f"Student {len(AnswerExport.results) + 1}"
+   # Validate student number
+    if not name.isdigit():
+        return jsonify(error="Please enter a valid student number."), 400
+
+    # Prevent duplicate student numbers
+    if any(r["name"] == name for r in AnswerExport.results):
+        return jsonify(error="This student number has already been scanned."), 400
 
     try:
         student_index = AnswerExport.add_result(name, answers)
@@ -201,7 +205,7 @@ def results():
             <table>
 
                 <tr>
-                    <th>Student</th>
+                    <th>Student Number</th>
                     <th>Score</th>
                     <th>Percentage</th>
                     <th>Review</th>
