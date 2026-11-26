@@ -45,22 +45,11 @@
 
         <h1>Please Scan the Student</h1>
 
-        <p id="studentCount">Students Scanned: 0/33</p>
+        <p id="studentCount">Students Scanned: 0/40</p>
 
         <br>
 
-        <div id="nameSection">
-
-            <label for="studentName">
-                Student Number:
-            </label>
-
-            <br>
-            <br>
-
-            <input id="studentName" type="text" inputmode="numeric" required>
-
-        </div>
+        
 
         <br>
         <br>
@@ -143,7 +132,7 @@
             let saved = false;
 
             let count = 0;
-            let maximum = 33;
+            let maximum = 40;
 
 
             function show(id, visible) {
@@ -427,12 +416,7 @@
                         return;
                     }
 
-                    if (!/^\d+$/.test(studentName.value.trim())) {
-                        
-                        setStatus("Please enter a valid student number.", true);
-                        return;
-                    
-                    }
+
 
                     submitting = true;
 
@@ -446,7 +430,7 @@
 
                     form.append("photo", photoBlob, "student.jpg");
                     form.append("mode", "student");
-                    form.append("name", studentName.value.trim());
+                    
 
                     setStatus("Reading the student answers...", false);
 
