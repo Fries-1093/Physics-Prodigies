@@ -1,394 +1,421 @@
 <!DOCTYPE html>
 <html>
-    <head>
-        <title>Scantroon - Start</title>
+<head>
+    <title>MCQ Scanner - Start</title>
 
-        <style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-            body{
-                text-align: center;
-                font-size: 110%;
+    <style>
+
+        body {
+            text-align: center;
+            font-family: Arial, sans-serif;
+            font-size: 150%;
+        }
+
+        h1 {
+            margin-top: 10%;
+            font-size: 70px;
+            margin-bottom: 30px;
+        }
+
+        button {
+            text-align: center;
+            background-color: rgb(19, 58, 176);
+            color: whitesmoke;
+            padding: 20px;
+            margin-bottom: 25px;
+            width: 300px;
+            max-width: 90%;
+            font-size: 30px;
+            font-weight: bold;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+
+        video, #preview {
+            width: 100%;
+            max-width: 400px;
+            border-radius: 8px;
+        }
+
+        input[type="file"] {
+            font-size: 18px;
+            max-width: 90%;
+        }
+
+        #status {
+            white-space: pre-wrap;
+            font-size: 22px;
+        }
+
+        .error {
+            color: #b00020;
+        }
+
+        @media (max-width: 600px) {
+
+            h1 {
+                font-size: 42px;
             }
 
-            h1{
-                margin-top: 200px;
+            button {
+                font-size: 24px;
             }
 
-            button{
-                text-align: center;
-                background-color: rgb(19, 58, 176);
-                color: whitesmoke;
-                padding: 10px;
-                margin-bottom: 10px;
-                width: 200px;
-            }
+        }
 
-            video, #preview{
-                width: 100%;
-                max-width: 400px;
-                border-radius: 8px;
-            }
+    </style>
 
-            #status{
-                white-space: pre-wrap;
-            }
+</head>
 
-            .error{
-                color: #b00020;
-            }
+<body>
 
-        </style>
+    <h1>Please Scan the Answer Key</h1>
 
-    </head>
+    <br>
 
-    <body>
+    <button id="startBtn">Scan Answer Key</button>
 
-        <h1>Please Scan the Answer Key</h1>
+    <br>
 
-        <br>
-        <br>
+    <!-- Live camera view -->
 
-        <button id="startBtn">Scan Answer Key</button>
+    <video id="video" autoplay playsinline muted
+           style="display:none;"></video>
 
-        <br>
+    <br>
 
-        <!-- Live camera view -->
+    <button id="captureBtn" style="display:none;">
+        Take Photo
+    </button>
 
-        <video id="video" autoplay playsinline muted
-               style="display:none;"></video>
+    <!-- Photo preview -->
 
-        <br>
+    <img id="preview" alt="Captured photo"
+         style="display:none;">
 
-        <button id="captureBtn" style="display:none;">
-            Take Photo
-        </button>
+    <br>
 
-        <!-- Photo preview -->
+    <button id="useBtn" style="display:none;">
+        Use This Photo
+    </button>
 
-        <img id="preview" alt="Captured photo"
-             style="display:none;">
+    <button id="retakeBtn" style="display:none;">
+        Retake
+    </button>
 
-        <br>
+    <!-- Fallback photo upload -->
 
-        <button id="useBtn" style="display:none;">
-            Use This Photo
-        </button>
+    <p>Camera not working? Take or choose a photo instead:</p>
 
-        <button id="retakeBtn" style="display:none;">
-            Retake
-        </button>
+    <input id="fileInput" type="file"
+           accept="image/*" capture="environment">
 
-        <!-- Fallback photo upload -->
+    <p id="status"></p>
 
-        <p>Camera not working? Take or choose a photo instead:</p>
+    <!-- Appears once the answer key is saved -->
 
-        <input id="fileInput" type="file"
-               accept="image/*" capture="environment">
+    <button id="continueBtn" style="display:none;"
+            onclick="window.location.href='/students'">
+        Continue
+    </button>
 
-        <p id="status"></p>
+    <br>
+    <br>
 
-        <!-- Appears once the answer key is saved -->
+    <button onclick="window.location.href='/'">
+        Back
+    </button>
 
-        <button id="continueBtn" style="display:none;"
-                onclick="window.location.href='/students'">
-            Continue
-        </button>
+    <script>
 
-        <br>
-        <br>
-        <br>
+        const video = document.getElementById("video");
+        const preview = document.getElementById("preview");
+        const statusBox = document.getElementById("status");
+        const fileInput = document.getElementById("fileInput");
 
-        <button onclick="window.location.href='/'">
-            Back
-        </button>
+        let stream = null;
+        let photoBlob = null;
+        let previewURL = null;
+        let submitting = false;
+        let saved = false;
 
-        <script>
+        function show(id, visible) {
 
-            const video = document.getElementById("video");
-            const preview = document.getElementById("preview");
-            const statusBox = document.getElementById("status");
-            const fileInput = document.getElementById("fileInput");
+            document.getElementById(id).style.display =
+                visible ? "inline-block" : "none";
 
-            let stream = null;
-            let photoBlob = null;
-            let previewURL = null;
-            let submitting = false;
-            let saved = false;
-
-            function show(id, visible) {
-
-                document.getElementById(id).style.display =
-                    visible ? "inline-block" : "none";
-
-            }
+        }
 
 
-            function setStatus(message, isError) {
+        function setStatus(message, isError) {
 
-                statusBox.textContent = message;
-                statusBox.className = isError ? "error" : "";
+            statusBox.textContent = message;
+            statusBox.className = isError ? "error" : "";
+
+        }
+
+
+        function stopCamera() {
+
+            if (stream) {
+
+                stream.getTracks().forEach(function (t) {
+                    t.stop();
+                });
+
+                stream = null;
 
             }
 
+            video.srcObject = null;
+            video.style.display = "none";
 
-            function stopCamera() {
+            show("captureBtn", false);
 
-                if (stream) {
+        }
 
-                    stream.getTracks().forEach(function (t) {
-                        t.stop();
-                    });
 
-                    stream = null;
+        function clearPreview() {
 
-                }
-
-                video.srcObject = null;
-                video.style.display = "none";
-
-                show("captureBtn", false);
-
+            if (previewURL) {
+                URL.revokeObjectURL(previewURL);
+                previewURL = null;
             }
 
+            photoBlob = null;
 
-            function clearPreview() {
+            preview.removeAttribute("src");
+            preview.style.display = "none";
 
-                if (previewURL) {
-                    URL.revokeObjectURL(previewURL);
-                    previewURL = null;
-                }
+        }
 
-                photoBlob = null;
 
-                preview.removeAttribute("src");
-                preview.style.display = "none";
+        function showPreview(blob) {
 
+            if (!blob || submitting || saved) {
+                return;
             }
 
+            clearPreview();
 
-            function showPreview(blob) {
+            photoBlob = blob;
 
-                if (!blob || submitting || saved) {
+            previewURL = URL.createObjectURL(blob);
+            preview.src = previewURL;
+
+            preview.style.display = "inline-block";
+
+            show("useBtn", true);
+            show("retakeBtn", true);
+            show("startBtn", false);
+
+            setStatus("", false);
+
+        }
+
+
+        // 1. Open the camera
+
+        document.getElementById("startBtn").onclick =
+            async function () {
+
+                if (submitting || saved || stream) {
                     return;
                 }
 
-                clearPreview();
+                try {
 
-                photoBlob = blob;
+                    stream = await navigator.mediaDevices.getUserMedia({
 
-                previewURL = URL.createObjectURL(blob);
-                preview.src = previewURL;
+                        video: {
+                            facingMode: {
+                                ideal: "environment"
+                            }
+                        },
 
-                preview.style.display = "inline-block";
+                        audio: false
 
-                show("useBtn", true);
-                show("retakeBtn", true);
-                show("startBtn", false);
+                    });
 
-                setStatus("", false);
+                    video.srcObject = stream;
+                    video.style.display = "inline-block";
 
-            }
+                    show("captureBtn", true);
+                    show("startBtn", false);
 
+                    setStatus("", false);
 
-            // 1. Open the camera
+                } catch (err) {
 
-            document.getElementById("startBtn").onclick =
-                async function () {
-
-                    if (submitting || saved || stream) {
-                        return;
-                    }
-
-                    try {
-
-                        stream = await navigator.mediaDevices.getUserMedia({
-
-                            video: {
-                                facingMode: {
-                                    ideal: "environment"
-                                }
-                            },
-
-                            audio: false
-
-                        });
-
-                        video.srcObject = stream;
-                        video.style.display = "inline-block";
-
-                        show("captureBtn", true);
-                        show("startBtn", false);
-
-                        setStatus("", false);
-
-                    } catch (err) {
-
-                        setStatus(
-                            "Could not open the camera (" +
-                            err.name +
-                            "). Use the photo option below instead.",
-                            true
-                        );
-
-                    }
-
-                };
-
-
-            // 2. Take the photo
-
-            document.getElementById("captureBtn").onclick =
-                function () {
-
-                    if (!video.videoWidth || !video.videoHeight) {
-
-                        setStatus("Camera is not ready.", true);
-                        return;
-
-                    }
-
-                    const canvas = document.createElement("canvas");
-
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-
-                    canvas.getContext("2d").drawImage(video, 0, 0);
-
-                    canvas.toBlob(function (blob) {
-
-                        stopCamera();
-                        showPreview(blob);
-
-                    }, "image/jpeg", 0.92);
-
-                };
-
-
-            // Fallback: choose a photo
-
-            fileInput.onchange = function (e) {
-
-                if (e.target.files[0] && !submitting && !saved) {
-
-                    stopCamera();
-                    showPreview(e.target.files[0]);
+                    setStatus(
+                        "Could not open the camera (" +
+                        err.name +
+                        "). Use the photo option below instead.",
+                        true
+                    );
 
                 }
 
             };
 
 
-            // Retake the photo
+        // 2. Take the photo
 
-            document.getElementById("retakeBtn").onclick =
-                function () {
+        document.getElementById("captureBtn").onclick =
+            function () {
 
-                    if (submitting || saved) {
-                        return;
-                    }
+                if (!video.videoWidth || !video.videoHeight) {
 
-                    clearPreview();
+                    setStatus("Camera is not ready.", true);
+                    return;
 
-                    fileInput.value = "";
+                }
 
-                    show("useBtn", false);
-                    show("retakeBtn", false);
-                    show("startBtn", true);
-                    show("continueBtn", false);
+                const canvas = document.createElement("canvas");
 
-                    setStatus("", false);
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
 
-                };
+                canvas.getContext("2d").drawImage(video, 0, 0);
+
+                canvas.toBlob(function (blob) {
+
+                    stopCamera();
+                    showPreview(blob);
+
+                }, "image/jpeg", 0.92);
+
+            };
 
 
-            // 3. Send the photo as the answer key
+        // Fallback: choose a photo
 
-            document.getElementById("useBtn").onclick =
-                async function () {
+        fileInput.onchange = function (e) {
 
-                    if (!photoBlob || submitting || saved) {
-                        return;
-                    }
+            if (e.target.files[0] && !submitting && !saved) {
 
-                    submitting = true;
+                stopCamera();
+                showPreview(e.target.files[0]);
 
-                    document.getElementById("useBtn").disabled = true;
-                    document.getElementById("retakeBtn").disabled = true;
+            }
 
-                    fileInput.disabled = true;
+        };
 
-                    const form = new FormData();
 
-                    form.append("photo", photoBlob, "key.jpg");
-                    form.append("mode", "key");
+        // Retake the photo
 
-                    setStatus("Reading the answer key...", false);
+        document.getElementById("retakeBtn").onclick =
+            function () {
 
-                    try {
+                if (submitting || saved) {
+                    return;
+                }
 
-                        const res = await fetch("/scan", {
-                            method: "POST",
-                            body: form
-                        });
+                clearPreview();
 
-                        const data = await res.json();
+                fileInput.value = "";
 
-                        if (!res.ok) {
+                show("useBtn", false);
+                show("retakeBtn", false);
+                show("startBtn", true);
+                show("continueBtn", false);
 
-                            setStatus(
-                                data.error ||
-                                "Something went wrong. Please retake the photo.",
-                                true
-                            );
+                setStatus("", false);
 
-                            return;
+            };
 
-                        }
 
-                        saved = true;
+        // 3. Send the photo as the answer key
+
+        document.getElementById("useBtn").onclick =
+            async function () {
+
+                if (!photoBlob || submitting || saved) {
+                    return;
+                }
+
+                submitting = true;
+
+                document.getElementById("useBtn").disabled = true;
+                document.getElementById("retakeBtn").disabled = true;
+
+                fileInput.disabled = true;
+
+                const form = new FormData();
+
+                form.append("photo", photoBlob, "key.jpg");
+                form.append("mode", "key");
+
+                setStatus("Reading the answer key...", false);
+
+                try {
+
+                    const res = await fetch("/scan", {
+                        method: "POST",
+                        body: form
+                    });
+
+                    const data = await res.json();
+
+                    if (!res.ok) {
 
                         setStatus(
-                            "Answer key saved: " +
-                            data.answers.join(", "),
-                            false
-                        );
-
-                        show("useBtn", false);
-                        show("retakeBtn", false);
-                        show("continueBtn", true);
-
-                    } catch (err) {
-
-                        setStatus(
-                            "Could not reach the server: " +
-                            err.message,
+                            data.error ||
+                            "Something went wrong. Please retake the photo.",
                             true
                         );
 
-                    } finally {
-
-                        submitting = false;
-
-                        document.getElementById("useBtn").disabled = false;
-                        document.getElementById("retakeBtn").disabled = false;
-
-                        if (!saved) {
-                            fileInput.disabled = false;
-                        }
+                        return;
 
                     }
 
-                };
+                    saved = true;
+
+                    setStatus(
+                        "Answer key saved: " +
+                        data.answers.join(", "),
+                        false
+                    );
+
+                    show("useBtn", false);
+                    show("retakeBtn", false);
+                    show("continueBtn", true);
+
+                } catch (err) {
+
+                    setStatus(
+                        "Could not reach the server: " +
+                        err.message,
+                        true
+                    );
+
+                } finally {
+
+                    submitting = false;
+
+                    document.getElementById("useBtn").disabled = false;
+                    document.getElementById("retakeBtn").disabled = false;
+
+                    if (!saved) {
+                        fileInput.disabled = false;
+                    }
+
+                }
+
+            };
 
 
-            window.addEventListener("pagehide", function () {
+        window.addEventListener("pagehide", function () {
 
-                stopCamera();
-                clearPreview();
+            stopCamera();
+            clearPreview();
 
-            });
+        });
 
-        </script>
+    </script>
 
-    </body>
+</body>
 </html>
