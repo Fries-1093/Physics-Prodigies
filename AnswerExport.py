@@ -6,7 +6,7 @@ import csv
 import io
 
 N_Q = 10
-MAX_STUDENTS = 33   # class size limit (the answer key is not counted)
+MAX_STUDENTS = 40   # class size limit (the answer key is not counted)
 
 # The temporary "database": one dict per student
 results = []
