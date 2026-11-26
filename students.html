@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html>
 <head>
+
     <title>MCQ Scanner - Students</title>
 
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
 
     <style>
 
@@ -135,8 +137,6 @@
 
     <p id="status"></p>
 
-    <!-- Appears once a student's photo is saved -->
-
     <button id="nextBtn" style="display:none;">
         Next
     </button>
@@ -255,21 +255,30 @@
         }
 
 
-        // Retrieve the existing student count
+        // Retrieve the actual student count from Flask
 
         async function loadCount() {
 
             try {
 
-                const res = await fetch("/student-count");
+                const res = await fetch("/student-count", {
+                    cache: "no-store"
+                });
+
                 const data = await res.json();
 
                 if (!res.ok) {
-                    throw new Error("Unable to retrieve student count.");
+
+                    throw new Error(
+                        "Unable to retrieve student count."
+                    );
+
                 }
 
-                count = data.count;
-                maximum = data.maximum;
+                count = data.student_count ?? data.count ?? 0;
+
+                maximum =
+                    data.max_students ?? data.maximum ?? 40;
 
                 updateCount();
 
@@ -326,7 +335,12 @@
         document.getElementById("startBtn").onclick =
             async function () {
 
-                if (submitting || saved || count >= maximum || stream) {
+                if (
+                    submitting ||
+                    saved ||
+                    count >= maximum ||
+                    stream
+                ) {
                     return;
                 }
 
@@ -395,7 +409,7 @@
             };
 
 
-        // Fallback: choose a photo
+        // Upload a photo instead
 
         fileInput.onchange = function (e) {
 
@@ -414,7 +428,7 @@
         };
 
 
-        // Retake the student photo
+        // Retake the photo
 
         document.getElementById("retakeBtn").onclick =
             function () {
@@ -437,7 +451,7 @@
             };
 
 
-        // 3. Send the photo as a student paper
+        // 3. Send the student photo
 
         document.getElementById("useBtn").onclick =
             async function () {
@@ -490,8 +504,11 @@
 
                     saved = true;
 
-                    count = data.student_count;
-                    maximum = data.maximum;
+                    count =
+                        data.student_count ?? data.count ?? count;
+
+                    maximum =
+                        data.max_students ?? data.maximum ?? maximum;
 
                     updateCount();
 
@@ -500,7 +517,10 @@
                         "\nAnswers: " + data.answers.join(", ") +
                         "\nScore: " + data.score + "/" + data.total;
 
-                    if (data.needs_review.length > 0) {
+                    if (
+                        data.needs_review &&
+                        data.needs_review.length > 0
+                    ) {
 
                         message +=
                             "\nAnswers to check: Q" +
@@ -552,7 +572,7 @@
             };
 
 
-        // 4. NEXT: Scan another student
+        // 4. Scan another student
 
         document.getElementById("nextBtn").onclick =
             function () {
@@ -580,7 +600,6 @@
                 show("continueBtn", true);
                 show("useBtn", false);
                 show("retakeBtn", false);
-
                 show("startBtn", true);
                 show("fileSection", true);
 
@@ -589,7 +608,7 @@
             };
 
 
-        // 5. CONTINUE: Finish scanning students
+        // 5. Finish scanning
 
         document.getElementById("continueBtn").onclick =
             function () {
@@ -634,7 +653,7 @@
             };
 
 
-        // Turn off the camera when leaving the page
+        // Turn off the camera when leaving
 
         window.addEventListener("pagehide", function () {
 
