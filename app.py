@@ -59,7 +59,7 @@ def scan():
 
     photo = request.files.get("photo")
     mode = request.form.get("mode", "student")
-    name = request.form.get("name", "").strip()
+    name = f"Student {len(AnswerExport.results) + 1}"
 
     if photo is None:
         return jsonify(error="No photo received."), 400
