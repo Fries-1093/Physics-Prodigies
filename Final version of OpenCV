@@ -6,10 +6,10 @@ Features:
 - Automatic paper-corner detection
 - Perspective correction
 - Automatic rotation detection
-- Answer-section cropping
-- Bubble detection
+- Improved bubble detection
 - Answer classification
 - REVIEW detection
+- Debug image generation
 """
 
 import argparse
@@ -29,14 +29,6 @@ WORK_WIDTH = 850
 PAGE_WIDTH = 850
 PAGE_HEIGHT = 1100
 
-# Answer-section crop.
-# These are proportions of the corrected page.
-CROP_LEFT = 0.10
-CROP_RIGHT = 0.90
-CROP_TOP = 0.45
-CROP_BOTTOM = 0.90
-
-# Bubble classification settings.
 MAX_SHADED_STD = 27.0
 MIN_DARKER_THAN_OTHERS = 12.0
 
@@ -124,8 +116,7 @@ def find_paper_corners(img):
             if len(approx) == 4 and cv2.isContourConvex(approx):
                 return order_points(approx.reshape(4, 2))
 
-    # Second attempt: edge detection.
-
+    # Second attempt using edge detection.
     edges = cv2.Canny(blur, 30, 100)
 
     edges = cv2.morphologyEx(
@@ -234,8 +225,235 @@ def resize_page(img):
     return cv2.resize(
         img,
         (WORK_WIDTH, height),
-        interpolation=cv2.INTER_CUBIC
+        interpolation=cv2.INTER_AREA
     )
+
+
+# --------------------------------------------------
+# CIRCLE DETECTION HELPERS
+# --------------------------------------------------
+
+def remove_duplicate_circles(circles):
+    """Remove multiple detections of the same bubble."""
+
+    circles = sorted(
+        circles,
+        key=lambda c: c[2],
+        reverse=True
+    )
+
+    filtered = []
+
+    for circle in circles:
+
+        x, y, radius = circle
+        duplicate = False
+
+        for existing in filtered:
+
+            ex, ey, er = existing
+
+            distance = np.sqrt(
+                (x - ex) ** 2 + (y - ey) ** 2
+            )
+
+            if distance < min(radius, er) * 1.2:
+                duplicate = True
+                break
+
+        if not duplicate:
+            filtered.append(circle)
+
+    return filtered
+
+
+def find_circle_candidates(gray):
+    """Try several Hough settings to find bubble candidates."""
+
+    clahe = cv2.createCLAHE(
+        clipLimit=2.5,
+        tileGridSize=(8, 8)
+    )
+
+    enhanced = clahe.apply(gray)
+
+    blur = cv2.GaussianBlur(
+        enhanced,
+        (5, 5),
+        1.2
+    )
+
+    all_circles = []
+
+    settings = [
+        (1.2, 18, 100, 4, 18),
+        (1.2, 16, 100, 4, 18),
+        (1.2, 14, 100, 4, 18),
+        (1.0, 18, 100, 5, 17)
+    ]
+
+    for dp, param2, param1, min_radius, max_radius in settings:
+
+        found = cv2.HoughCircles(
+            blur,
+            cv2.HOUGH_GRADIENT,
+            dp=dp,
+            minDist=18,
+            param1=param1,
+            param2=param2,
+            minRadius=min_radius,
+            maxRadius=max_radius
+        )
+
+        if found is not None:
+            all_circles.extend(found[0].tolist())
+
+    return remove_duplicate_circles(all_circles)
+
+
+def group_circles_by_row(circles):
+    """Group detected circles into the five horizontal question rows."""
+
+    if not circles:
+        raise ValueError("No circles were detected.")
+
+    circles = sorted(circles, key=lambda c: c[1])
+
+    groups = []
+
+    for circle in circles:
+
+        x, y, radius = circle
+
+        placed = False
+
+        for group in groups:
+
+            group_y = np.median([
+                c[1] for c in group
+            ])
+
+            if abs(y - group_y) <= 18:
+                group.append(circle)
+                placed = True
+                break
+
+        if not placed:
+            groups.append([circle])
+
+    # Merge groups whose centres are very close.
+    merged = []
+
+    for group in groups:
+
+        group_y = np.median([
+            c[1] for c in group
+        ])
+
+        matching = None
+
+        for existing in merged:
+
+            existing_y = np.median([
+                c[1] for c in existing
+            ])
+
+            if abs(group_y - existing_y) <= 18:
+                matching = existing
+                break
+
+        if matching is None:
+            merged.append(group)
+        else:
+            matching.extend(group)
+
+    # Keep groups with enough circles to represent a question row.
+    valid_groups = [
+        group for group in merged
+        if len(group) >= 8
+    ]
+
+    valid_groups.sort(
+        key=lambda group: np.median([c[1] for c in group])
+    )
+
+    if len(valid_groups) != 5:
+        raise ValueError(
+            f"Detected {len(valid_groups)} question rows instead of 5. "
+            "Try a brighter, clearer photo with the entire sheet visible."
+        )
+
+    return valid_groups
+
+
+def split_row_into_columns(group):
+    """Separate one horizontal row into left and right groups of five."""
+
+    group = sorted(group, key=lambda c: c[0])
+
+    if len(group) < 10:
+        raise ValueError(
+            f"Only found {len(group)} bubbles in a question row."
+        )
+
+    # Find the largest horizontal gap between the two columns.
+    gaps = [
+        group[i + 1][0] - group[i][0]
+        for i in range(len(group) - 1)
+    ]
+
+    split_index = int(np.argmax(gaps)) + 1
+
+    left = group[:split_index]
+    right = group[split_index:]
+
+    if len(left) < 5 or len(right) < 5:
+        raise ValueError(
+            "Could not separate the left and right answer columns."
+        )
+
+    def choose_five(candidates):
+
+        candidates = sorted(
+            candidates,
+            key=lambda c: c[0]
+        )
+
+        if len(candidates) == 5:
+            return candidates
+
+        # Find the five consecutive circles with the most
+        # evenly spaced horizontal positions.
+        best = None
+        best_score = float("inf")
+
+        for start in range(len(candidates) - 4):
+
+            selection = candidates[start:start + 5]
+
+            xs = [c[0] for c in selection]
+            spacing = np.diff(xs)
+
+            if np.any(spacing <= 0):
+                continue
+
+            score = float(np.std(spacing))
+
+            if score < best_score:
+                best_score = score
+                best = selection
+
+        if best is None:
+            raise ValueError(
+                "Could not identify five bubbles in a column."
+            )
+
+        return best
+
+    left = choose_five(left)
+    right = choose_five(right)
+
+    return left, right
 
 
 # --------------------------------------------------
@@ -244,210 +462,73 @@ def resize_page(img):
 
 def find_grid(gray):
     """
-    Find the 50 bubbles inside the answer section.
-
-    The top instructions and example bubbles are excluded.
-    Returned coordinates are relative to the full page.
+    Find five horizontal rows, each containing ten bubbles.
+    The first five bubbles are Q1-Q5.
+    The second five bubbles are Q6-Q10.
     """
 
-    page_height, page_width = gray.shape
+    height, width = gray.shape
 
-    # Crop the answer area.
-    x1 = int(page_width * CROP_LEFT)
-    x2 = int(page_width * CROP_RIGHT)
+    circles = find_circle_candidates(gray)
 
-    y1 = int(page_height * CROP_TOP)
-    y2 = int(page_height * CROP_BOTTOM)
-
-    answer_area = gray[y1:y2, x1:x2]
-
-    if answer_area.size == 0:
-        raise ValueError("Could not crop the answer section.")
-
-    # Improve contrast in uneven lighting.
-    clahe = cv2.createCLAHE(
-        clipLimit=2.0,
-        tileGridSize=(8, 8)
-    )
-
-    enhanced = clahe.apply(answer_area)
-
-    blur = cv2.GaussianBlur(
-        enhanced,
-        (5, 5),
-        1
-    )
-
-    found = cv2.HoughCircles(
-        blur,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=22,
-        param1=100,
-        param2=18,
-        minRadius=5,
-        maxRadius=20
-    )
-
-    count = 0 if found is None else len(found[0])
-
-    print("Circles detected in answer section:", count)
-
-    if count != N_QUESTIONS * OPTIONS:
-        raise ValueError(
-            f"Found {count} circles instead of 50 "
-            "in the answer section."
-        )
-
-    # Convert crop coordinates back to full-page coordinates.
-    circles = []
-
-    for circle in found[0]:
-
-        x, y, radius = circle
-
-        circles.append([
-            float(x + x1),
-            float(y + y1),
-            float(radius)
-        ])
-
-    # Split into left and right columns.
-    circles.sort(key=lambda c: c[0])
-
-    columns = [
-        circles[:25],
-        circles[25:]
-    ]
-
-    if max(c[0] for c in columns[0]) >= min(c[0] for c in columns[1]):
-        raise ValueError(
-            "Unable to separate the two answer columns."
-        )
-
-    rows = []
-
-    for column in columns:
-
-        column.sort(key=lambda c: c[1])
-
-        for j in range(0, 25, OPTIONS):
-
-            row = sorted(
-                column[j:j + OPTIONS],
-                key=lambda c: c[0]
-            )
-
-            if len(row) != OPTIONS:
-                raise ValueError(
-                    "Missing bubbles in a question row."
-                )
-
-            ys = [c[1] for c in row]
-
-            gaps = np.diff([
-                c[0] for c in row
-            ])
-
-            if max(ys) - min(ys) > 13:
-                raise ValueError(
-                    "Bubbles in a question are not horizontally aligned."
-                )
-
-            if np.any(gaps < 20) or np.any(gaps > 40):
-                raise ValueError(
-                    "Unexpected spacing between A-E bubbles."
-                )
-
-            rows.append(row)
-
-    # Check spacing between the five rows in each column.
-    for offset in (0, 5):
-
-        centers = [
-            float(np.median([c[1] for c in row]))
-            for row in rows[offset:offset + 5]
-        ]
-
-        row_gaps = np.diff(centers)
-
-        if np.any(row_gaps < 55) or np.any(row_gaps > 95):
-            raise ValueError(
-                "Unexpected spacing between question rows."
-            )
-
-    # Check alignment between the two columns.
-    for i in range(5):
-
-        left_y = np.median([
-            c[1] for c in rows[i]
-        ])
-
-        right_y = np.median([
-            c[1] for c in rows[i + 5]
-        ])
-
-        if abs(left_y - right_y) > 15:
-            raise ValueError(
-                "Question rows across columns do not line up."
-            )
-
-    return rows
-
-
-# --------------------------------------------------
-# ROTATION DETECTION
-# --------------------------------------------------
-
-def find_correct_orientation(img):
-    """
-    Test four rotations and select the orientation
-    in which the expected 50-bubble layout is detected.
-    """
-
-    rotations = [
-        ("0 degrees", img),
-        (
-            "90 degrees clockwise",
-            cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-        ),
-        (
-            "180 degrees",
-            cv2.rotate(img, cv2.ROTATE_180)
-        ),
-        (
-            "90 degrees counterclockwise",
-            cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    # Ignore circles outside the expected answer area.
+    circles = [
+        c for c in circles
+        if (
+            width * 0.10 <= c[0] <= width * 0.93
+            and height * 0.25 <= c[1] <= height * 0.85
         )
     ]
 
-    errors = []
+    circles = remove_duplicate_circles(circles)
 
-    for label, rotated in rotations:
-
-        candidate = resize_page(rotated)
-
-        gray = cv2.cvtColor(
-            candidate,
-            cv2.COLOR_BGR2GRAY
+    if len(circles) < 50:
+        raise ValueError(
+            f"Found only {len(circles)} possible bubbles instead of 50. "
+            "Try a brighter photo with the entire page visible."
         )
 
-        try:
+    row_groups = group_circles_by_row(circles)
 
-            rows = find_grid(gray)
+    left_rows = []
+    right_rows = []
 
-            print("Detected page orientation:", label)
+    for group in row_groups:
 
-            return candidate, gray, rows
+        left, right = split_row_into_columns(group)
 
-        except ValueError as exc:
+        left_rows.append(left)
+        right_rows.append(right)
 
-            errors.append(f"{label}: {exc}")
+    # Confirm that each answer row has five bubbles.
+    for row in left_rows + right_rows:
 
-    raise ValueError(
-        "Could not find the 50 bubbles in any orientation.\n"
-        + "\n".join(errors)
-    )
+        if len(row) != OPTIONS:
+            raise ValueError(
+                "A question row does not contain five bubbles."
+            )
+
+    # Check that the bubbles are horizontally aligned.
+    for row in left_rows + right_rows:
+
+        ys = [c[1] for c in row]
+
+        if max(ys) - min(ys) > 18:
+            raise ValueError(
+                "Bubbles in a question are not horizontally aligned."
+            )
+
+        xs = [c[0] for c in row]
+        gaps = np.diff(xs)
+
+        if np.any(gaps < 15) or np.any(gaps > 50):
+            raise ValueError(
+                "Unexpected spacing between A-E bubbles."
+            )
+
+    # Q1-Q5 are on the left.
+    # Q6-Q10 are on the right.
+    return left_rows + right_rows
 
 
 # --------------------------------------------------
@@ -464,10 +545,12 @@ def measure(gray, circle):
 
     radius = 7
 
-    patch = gray[
-        y-radius:y+radius+1,
-        x-radius:x+radius+1
-    ]
+    y1 = max(0, y - radius)
+    y2 = min(gray.shape[0], y + radius + 1)
+    x1 = max(0, x - radius)
+    x2 = min(gray.shape[1], x + radius + 1)
+
+    patch = gray[y1:y2, x1:x2]
 
     if patch.shape != (15, 15):
         raise ValueError(
@@ -475,13 +558,13 @@ def measure(gray, circle):
         )
 
     yy, xx = np.ogrid[
-        -radius:radius+1,
-        -radius:radius+1
+        -radius:radius + 1,
+        -radius:radius + 1
     ]
 
-    pixels = patch[
-        xx * xx + yy * yy < 40
-    ]
+    mask = xx * xx + yy * yy < 40
+
+    pixels = patch[mask]
 
     return (
         float(np.std(pixels)),
@@ -565,6 +648,58 @@ def classify_question(stats):
 
 
 # --------------------------------------------------
+# ROTATION DETECTION
+# --------------------------------------------------
+
+def find_correct_orientation(img):
+    """Test four rotations and select one with a valid bubble grid."""
+
+    rotations = [
+        ("0 degrees", img),
+        (
+            "90 degrees clockwise",
+            cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        ),
+        (
+            "180 degrees",
+            cv2.rotate(img, cv2.ROTATE_180)
+        ),
+        (
+            "90 degrees counterclockwise",
+            cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        )
+    ]
+
+    errors = []
+
+    for label, rotated in rotations:
+
+        candidate = resize_page(rotated)
+
+        gray = cv2.cvtColor(
+            candidate,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        try:
+
+            rows = find_grid(gray)
+
+            print("Detected page orientation:", label)
+
+            return candidate, gray, rows
+
+        except ValueError as exc:
+
+            errors.append(f"{label}: {exc}")
+
+    raise ValueError(
+        "Could not find the 50 bubbles in any orientation.\n"
+        + "\n".join(errors)
+    )
+
+
+# --------------------------------------------------
 # MAIN DETECTION FUNCTION
 # --------------------------------------------------
 
@@ -577,7 +712,7 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
             f"Could not open image: {path}"
         )
 
-    # STEP 1: Detect the paper and straighten it.
+    # STEP 1: Detect and straighten the paper.
     corrected = correct_perspective(img)
 
     # STEP 2: Find the correct page orientation.
