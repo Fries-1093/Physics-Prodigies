@@ -1,9 +1,6 @@
 """10-question, two-column Scantron reader.
 
 Install: python -m pip install opencv-python numpy
-
-Supports shaded bubbles, lightly shaded bubbles,
-multiple answers, blank answers and manual review.
 """
 
 import argparse
@@ -194,23 +191,43 @@ def measure(gray, circle):
 
 
 def classify_question(stats):
-    """Identify clear marks and uncertain shading."""
+    """Distinguish pencil shading from printed letters."""
 
     marked = []
     possible = []
 
     for i, (std, darkness) in enumerate(stats):
 
-        # Clearly or lightly shaded bubble.
+        other_stds = [
+            s for j, (s, d) in enumerate(stats)
+            if j != i
+        ]
 
-        if darkness >= 30 or (
-            darkness >= 18 and std < 30
+        smoothness = float(np.median(other_stds)) - std
+
+        # Clearly shaded bubble.
+
+        if darkness >= 45 or (
+            darkness >= 30 and std < 27
+        ):
+            marked.append(i)
+
+        # Lightly shaded bubble.
+
+        elif (
+            darkness >= 12
+            and std <= 23
+            and smoothness >= 8
         ):
             marked.append(i)
 
         # Possible faint shading.
 
-        elif darkness >= 10:
+        elif (
+            darkness >= 8
+            and std <= 23
+            and smoothness >= 5
+        ):
             possible.append(i)
 
     # Multiple selected answers.
@@ -232,7 +249,7 @@ def classify_question(stats):
     if possible:
         return "REVIEW", [], possible
 
-    # No shading detected.
+    # No sufficient evidence of shading.
 
     return "BLANK", [], []
 
