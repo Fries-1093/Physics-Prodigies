@@ -4,10 +4,11 @@
 
 Features:
 - Automatic paper-corner detection
-- Perspective correction for angled photographs
-- Bubble detection using OpenCV
-- Answer classification and REVIEW detection
-- Debug image generation
+- Perspective correction
+- Automatic rotation detection
+- Bubble detection
+- Answer classification
+- REVIEW detection
 """
 
 import argparse
@@ -24,11 +25,11 @@ OPTIONS = 5
 
 WORK_WIDTH = 495
 
-# Standard letter-sized paper: 8.5 x 11 inches.
+# Standard letter paper dimensions.
 PAGE_WIDTH = 850
 PAGE_HEIGHT = 1100
 
-# Bubble classification settings
+# Bubble classification settings.
 MAX_SHADED_STD = 27.0
 MIN_DARKER_THAN_OTHERS = 12.0
 
@@ -40,14 +41,11 @@ SECOND_MARK_DARKNESS = 18.0
 
 
 # --------------------------------------------------
-# PERSPECTIVE CORRECTION
+# PAPER DETECTION
 # --------------------------------------------------
 
 def order_points(points):
-    """
-    Arrange four paper corners in this order:
-    top-left, top-right, bottom-right, bottom-left.
-    """
+    """Order corners: top-left, top-right, bottom-right, bottom-left."""
 
     points = np.array(points, dtype="float32")
 
@@ -56,29 +54,78 @@ def order_points(points):
     sums = points.sum(axis=1)
     differences = np.diff(points, axis=1).flatten()
 
-    ordered[0] = points[np.argmin(sums)]          # Top-left
-    ordered[2] = points[np.argmax(sums)]          # Bottom-right
-    ordered[1] = points[np.argmin(differences)]   # Top-right
-    ordered[3] = points[np.argmax(differences)]   # Bottom-left
+    ordered[0] = points[np.argmin(sums)]
+    ordered[2] = points[np.argmax(sums)]
+    ordered[1] = points[np.argmin(differences)]
+    ordered[3] = points[np.argmax(differences)]
 
     return ordered
 
 
 def find_paper_corners(img):
-    """
-    Find the four outer corners of the answer sheet.
-    """
+    """Find the four corners of the paper."""
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # Smooth the image to reduce noise.
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    # Detect strong edges.
-    edges = cv2.Canny(blur, 30, 100)
+    # First attempt: separate the bright paper from the darker background.
+    _, threshold = cv2.threshold(
+        blur,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
 
-    # Connect nearby edge segments.
     kernel = np.ones((5, 5), np.uint8)
+
+    threshold = cv2.morphologyEx(
+        threshold,
+        cv2.MORPH_CLOSE,
+        kernel,
+        iterations=2
+    )
+
+    contours, _ = cv2.findContours(
+        threshold,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    image_area = img.shape[0] * img.shape[1]
+
+    contours = sorted(
+        contours,
+        key=cv2.contourArea,
+        reverse=True
+    )
+
+    # Try to find a large four-corner contour.
+    for contour in contours:
+
+        area = cv2.contourArea(contour)
+
+        if area < image_area * 0.15:
+            continue
+
+        perimeter = cv2.arcLength(contour, True)
+
+        for epsilon in (0.01, 0.015, 0.02, 0.03, 0.04):
+
+            approx = cv2.approxPolyDP(
+                contour,
+                epsilon * perimeter,
+                True
+            )
+
+            if (
+                len(approx) == 4
+                and cv2.isContourConvex(approx)
+            ):
+                return order_points(approx.reshape(4, 2))
+
+    # Second attempt: use edge detection if thresholding failed.
+    edges = cv2.Canny(blur, 30, 100)
 
     edges = cv2.morphologyEx(
         edges,
@@ -93,14 +140,6 @@ def find_paper_corners(img):
         cv2.CHAIN_APPROX_SIMPLE
     )
 
-    if not contours:
-        raise ValueError(
-            "Could not detect the paper. Make sure all four corners are visible."
-        )
-
-    image_area = img.shape[0] * img.shape[1]
-
-    # Sort contours from largest to smallest.
     contours = sorted(
         contours,
         key=cv2.contourArea,
@@ -111,13 +150,11 @@ def find_paper_corners(img):
 
         area = cv2.contourArea(contour)
 
-        # Ignore objects that are too small to be the paper.
         if area < image_area * 0.15:
             continue
 
         perimeter = cv2.arcLength(contour, True)
 
-        # Try several approximation levels.
         for epsilon in (0.015, 0.02, 0.03, 0.04, 0.05):
 
             approx = cv2.approxPolyDP(
@@ -126,47 +163,141 @@ def find_paper_corners(img):
                 True
             )
 
-            if len(approx) == 4 and cv2.isContourConvex(approx):
-
-                corners = approx.reshape(4, 2)
-
-                return order_points(corners)
+            if (
+                len(approx) == 4
+                and cv2.isContourConvex(approx)
+            ):
+                return order_points(approx.reshape(4, 2))
 
     raise ValueError(
-        "Could not identify all four paper corners. "
-        "Try taking a clearer photograph with the entire sheet visible."
+        "Could not detect the four paper corners. "
+        "Make sure the entire paper is visible."
     )
 
 
+# --------------------------------------------------
+# PERSPECTIVE CORRECTION
+# --------------------------------------------------
+
 def correct_perspective(img):
-    """
-    Straighten an angled photograph of the answer sheet.
-    """
+    """Straighten the paper while preserving its proportions."""
 
     corners = find_paper_corners(img)
 
-    # Destination coordinates for a straightened sheet.
+    top_left, top_right, bottom_right, bottom_left = corners
+
+    # Measure the four sides.
+    width_top = np.linalg.norm(top_right - top_left)
+    width_bottom = np.linalg.norm(bottom_right - bottom_left)
+
+    height_left = np.linalg.norm(bottom_left - top_left)
+    height_right = np.linalg.norm(bottom_right - top_right)
+
+    paper_width = max(width_top, width_bottom)
+    paper_height = max(height_left, height_right)
+
+    # Determine whether the photographed sheet is landscape or portrait.
+    if paper_width >= paper_height:
+
+        output_width = PAGE_HEIGHT
+        output_height = PAGE_WIDTH
+
+    else:
+
+        output_width = PAGE_WIDTH
+        output_height = PAGE_HEIGHT
+
     destination = np.array([
         [0, 0],
-        [PAGE_WIDTH - 1, 0],
-        [PAGE_WIDTH - 1, PAGE_HEIGHT - 1],
-        [0, PAGE_HEIGHT - 1]
+        [output_width - 1, 0],
+        [output_width - 1, output_height - 1],
+        [0, output_height - 1]
     ], dtype="float32")
 
-    # Calculate the perspective transformation.
     matrix = cv2.getPerspectiveTransform(
         corners,
         destination
     )
 
-    # Apply the transformation.
     corrected = cv2.warpPerspective(
         img,
         matrix,
-        (PAGE_WIDTH, PAGE_HEIGHT)
+        (output_width, output_height)
     )
 
     return corrected
+
+
+# --------------------------------------------------
+# RESIZE IMAGE
+# --------------------------------------------------
+
+def resize_page(img):
+
+    height = round(
+        img.shape[0] * WORK_WIDTH / img.shape[1]
+    )
+
+    return cv2.resize(
+        img,
+        (WORK_WIDTH, height),
+        interpolation=cv2.INTER_AREA
+    )
+
+
+# --------------------------------------------------
+# ROTATION DETECTION
+# --------------------------------------------------
+
+def find_correct_orientation(img):
+    """
+    Test four rotations and select the orientation
+    in which the expected 50-bubble layout is detected.
+    """
+
+    rotations = [
+        ("0 degrees", img),
+        (
+            "90 degrees clockwise",
+            cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        ),
+        (
+            "180 degrees",
+            cv2.rotate(img, cv2.ROTATE_180)
+        ),
+        (
+            "90 degrees counterclockwise",
+            cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        )
+    ]
+
+    errors = []
+
+    for label, rotated in rotations:
+
+        candidate = resize_page(rotated)
+
+        gray = cv2.cvtColor(
+            candidate,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        try:
+
+            rows = find_grid(gray)
+
+            print("Detected page orientation:", label)
+
+            return candidate, gray, rows
+
+        except ValueError as exc:
+
+            errors.append(f"{label}: {exc}")
+
+    raise ValueError(
+        "Could not find the 50 bubbles in any orientation.\n"
+        + "\n".join(errors)
+    )
 
 
 # --------------------------------------------------
@@ -175,11 +306,16 @@ def correct_perspective(img):
 
 def find_grid(gray):
     """
-    Return ten rows (Q1-Q5 left, Q6-Q10 right),
-    each containing five circles.
+    Return ten rows:
+    Q1-Q5 in the left column,
+    Q6-Q10 in the right column.
     """
 
-    blur = cv2.GaussianBlur(gray, (5, 5), 1)
+    blur = cv2.GaussianBlur(
+        gray,
+        (5, 5),
+        1
+    )
 
     found = cv2.HoughCircles(
         blur,
@@ -196,8 +332,7 @@ def find_grid(gray):
 
     if count != N_QUESTIONS * OPTIONS:
         raise ValueError(
-            f"Found {count} circles instead of 50. "
-            "Check that the entire answer grid is visible and clear."
+            f"Found {count} circles instead of 50."
         )
 
     circles = sorted(
@@ -234,7 +369,10 @@ def find_grid(gray):
                 )
 
             ys = [c[1] for c in row]
-            gaps = np.diff([c[0] for c in row])
+
+            gaps = np.diff([
+                c[0] for c in row
+            ])
 
             if max(ys) - min(ys) > 13:
                 raise ValueError(
@@ -248,7 +386,7 @@ def find_grid(gray):
 
             rows.append(row)
 
-    # Check that each column has five distinct rows.
+    # Check the five rows in each column.
     for offset in (0, 5):
 
         centers = [
@@ -263,11 +401,16 @@ def find_grid(gray):
                 "Unexpected spacing between question rows."
             )
 
-    # Check that left and right columns line up.
+    # Check alignment between the two columns.
     for i in range(5):
 
-        left_y = np.median([c[1] for c in rows[i]])
-        right_y = np.median([c[1] for c in rows[i + 5]])
+        left_y = np.median([
+            c[1] for c in rows[i]
+        ])
+
+        right_y = np.median([
+            c[1] for c in rows[i + 5]
+        ])
 
         if abs(left_y - right_y) > 15:
             raise ValueError(
@@ -282,10 +425,7 @@ def find_grid(gray):
 # --------------------------------------------------
 
 def measure(gray, circle):
-    """
-    Measure central shading while excluding
-    the outer printed bubble ring.
-    """
+    """Measure the central shading of a bubble."""
 
     x, y, _ = (
         int(round(value))
@@ -324,19 +464,12 @@ def measure(gray, circle):
 # --------------------------------------------------
 
 def classify_question(stats):
-    """
-    Return:
-    answer,
-    strongly marked indices,
-    possible second-mark indices.
-    """
 
     stds = [s for s, _ in stats]
     medians = [m for _, m in stats]
 
     baseline = float(np.median(medians))
 
-    # Detect strong pencil shading.
     strong = []
 
     for i in range(OPTIONS):
@@ -354,7 +487,6 @@ def classify_question(stats):
         ):
             strong.append(i)
 
-    # Detect possible second marks.
     possible = [
         i for i in range(OPTIONS)
         if i not in strong
@@ -415,29 +547,13 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
             f"Could not open image: {path}"
         )
 
-    # STEP 1: Straighten the paper.
-    img = correct_perspective(img)
+    # STEP 1: Detect the paper and straighten it.
+    corrected = correct_perspective(img)
 
-    # STEP 2: Resize the corrected paper.
-    height = round(
-        img.shape[0] * WORK_WIDTH / img.shape[1]
-    )
+    # STEP 2: Find the correct page orientation.
+    img, gray, rows = find_correct_orientation(corrected)
 
-    img = cv2.resize(
-        img,
-        (WORK_WIDTH, height),
-        interpolation=cv2.INTER_AREA
-    )
-
-    # STEP 3: Convert to grayscale.
-    gray = cv2.cvtColor(
-        img,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    # STEP 4: Find the answer bubbles.
-    rows = find_grid(gray)
-
+    # STEP 3: Prepare debug image.
     annotated = img.copy()
 
     answers = []
@@ -445,7 +561,7 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
     print("Question | Answer   | Std deviations      | Medians")
     print("-" * 76)
 
-    # STEP 5: Read each question.
+    # STEP 4: Read each question.
     for q, row in enumerate(rows, start=1):
 
         stats = [
@@ -457,12 +573,11 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
 
         answers.append(answer)
 
-        # Draw detection results.
         for i, (x, y, _) in enumerate(row):
 
-            # Green = clear mark
-            # Orange = possible mark
-            # Blue = unmarked
+            # Green = clear mark.
+            # Orange = possible mark.
+            # Blue = unmarked.
 
             color = (
                 (0, 190, 0) if i in strong
@@ -491,13 +606,11 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
         )
 
         stds = [
-            round(s)
-            for s, _ in stats
+            round(s) for s, _ in stats
         ]
 
         medians = [
-            round(m)
-            for _, m in stats
+            round(m) for _, m in stats
         ]
 
         print(
@@ -505,7 +618,7 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
             f"{str(stds):<19} | {medians}"
         )
 
-    # STEP 6: Save debug image.
+    # STEP 5: Save debug image.
     if not cv2.imwrite(str(debug_path), annotated):
         raise ValueError(
             f"Could not save debug image: {debug_path}"
@@ -522,10 +635,6 @@ def detect_answers(path, debug_path="debug_output_photo.png"):
 # --------------------------------------------------
 
 def apply_corrections(answers, entries, label):
-    """
-    Manually review/correct a sheet.
-    Example: --set 3=B
-    """
 
     updated = answers.copy()
     used = set()
@@ -533,10 +642,12 @@ def apply_corrections(answers, entries, label):
     for entry in entries:
 
         try:
+
             question_text, answer = entry.split("=", 1)
             question = int(question_text)
 
         except ValueError as exc:
+
             raise ValueError(
                 f"Invalid {label} correction '{entry}'; use 3=B."
             ) from exc
@@ -544,6 +655,7 @@ def apply_corrections(answers, entries, label):
         answer = answer.strip().upper()
 
         if question not in range(1, N_QUESTIONS + 1) or question in used:
+
             raise ValueError(
                 f"Invalid or repeated question number: {question}"
             )
@@ -555,6 +667,7 @@ def apply_corrections(answers, entries, label):
         )
 
         if answer not in allowed:
+
             raise ValueError(
                 f"Invalid {label} answer '{answer}'. "
                 f"Allowed: {sorted(allowed)}"
@@ -605,16 +718,14 @@ def main():
         "--set",
         action="append",
         default=[],
-        metavar="Q=ANSWER",
-        help="Correct a student's detected answer"
+        metavar="Q=ANSWER"
     )
 
     parser.add_argument(
         "--key-set",
         action="append",
         default=[],
-        metavar="Q=ANSWER",
-        help="Correct a teacher key's detected answer"
+        metavar="Q=ANSWER"
     )
 
     args = parser.parse_args()
@@ -653,6 +764,7 @@ def main():
         )
 
         if any(answer not in LETTERS for answer in key):
+
             raise ValueError(
                 "Teacher key has BLANK/MULTIPLE/REVIEW; "
                 "correct with --key-set Q=A"
@@ -685,6 +797,7 @@ def main():
         )
 
         output = Path(args.csv)
+
         output.parent.mkdir(
             parents=True,
             exist_ok=True
@@ -699,6 +812,7 @@ def main():
             writer = csv.writer(file)
 
             if file.tell() == 0:
+
                 writer.writerow([
                     "Student ID",
                     *[f"Q{i}" for i in range(1, 11)],
@@ -708,7 +822,6 @@ def main():
 
             student_id = str(args.student_id)
 
-            # Prevent spreadsheet formula interpretation.
             if student_id.startswith(
                 ("=", "+", "-", "@", "\t", "\r")
             ):
