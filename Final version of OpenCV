@@ -1,3 +1,4 @@
+
 """10-question, two-column Scantron reader.
 
 Install: python -m pip install opencv-python numpy
@@ -191,7 +192,10 @@ def measure(gray, circle):
 
 
 def classify_question(stats):
-    """Distinguish pencil shading from printed letters."""
+    """
+    Detect heavy and light pencil shading by comparing
+    each bubble with the other bubbles in the same row.
+    """
 
     marked = []
     possible = []
@@ -203,7 +207,18 @@ def classify_question(stats):
             if j != i
         ]
 
-        smoothness = float(np.median(other_stds)) - std
+        smoothness = (
+            float(np.median(other_stds)) - std
+        )
+
+        other_darkness = [
+            d for j, (s, d) in enumerate(stats)
+            if j != i
+        ]
+
+        contrast = (
+            darkness - float(np.median(other_darkness))
+        )
 
         # Clearly shaded bubble.
 
@@ -218,6 +233,16 @@ def classify_question(stats):
             darkness >= 12
             and std <= 23
             and smoothness >= 8
+        ):
+            marked.append(i)
+
+        # Uneven shading with sufficient relative contrast.
+        # Addresses the Q4 detection issue.
+
+        elif (
+            darkness >= 22
+            and contrast >= 15
+            and smoothness >= 6
         ):
             marked.append(i)
 
