@@ -23,7 +23,7 @@ LETTERS = "ABCDE"
 N_QUESTIONS = 10
 OPTIONS = 5
 
-WORK_WIDTH = 495
+WORK_WIDTH = 850
 
 # Standard letter paper dimensions.
 PAGE_WIDTH = 850
@@ -316,17 +316,17 @@ def find_grid(gray):
         (5, 5),
         1
     )
-
     found = cv2.HoughCircles(
-        blur,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=20,
-        param1=100,
-        param2=20,
-        minRadius=7,
-        maxRadius=14
+    blur,
+    cv2.HOUGH_GRADIENT,
+    dp=1.2,
+    minDist=22,
+    param1=100,
+    param2=18,
+    minRadius=5,
+    maxRadius=20
     )
+
 
     count = 0 if found is None else len(found[0])
 
